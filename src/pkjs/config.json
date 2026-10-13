@@ -1,0 +1,83 @@
+[
+  {
+    "type": "heading",
+    "defaultValue": "Lean"
+  },
+  {
+    "type": "text",
+    "defaultValue": "Not everyone can turn their arm far enough to see a watch straight on. Lean turns the time instead, so it meets your eye at the angle your wrist naturally comes to rest."
+  },
+  {
+    "type": "section",
+    "items": [
+      {
+        "type": "heading",
+        "defaultValue": "Angle"
+      },
+      {
+        "type": "radiogroup",
+        "messageKey": "WRIST",
+        "label": "Worn on",
+        "defaultValue": "0",
+        "options": [
+          {
+            "label": "Left wrist  ·  the time turns clockwise",
+            "value": "0"
+          },
+          {
+            "label": "Right wrist  ·  the time turns counter-clockwise",
+            "value": "1"
+          }
+        ]
+      },
+      {
+        "type": "slider",
+        "messageKey": "TILT",
+        "label": "Tilt",
+        "description": "In degrees. 0 keeps the time upright. Raise your wrist as you normally would and pick the value at which the digits look level to you.",
+        "defaultValue": 20,
+        "min": 0,
+        "max": 90,
+        "step": 5
+      },
+      {
+        "type": "toggle",
+        "messageKey": "FLIP",
+        "label": "Worn upside down",
+        "description": "Turns the time by another 180 degrees, for wearing the watch the other way round. Leave it off if your watch already turns the whole display.",
+        "defaultValue": false
+      }
+    ]
+  },
+  {
+    "type": "section",
+    "items": [
+      {
+        "type": "heading",
+        "defaultValue": "Colours"
+      },
+      {
+        "type": "color",
+        "messageKey": "COLOR_BG",
+        "label": "Background",
+        "defaultValue": "0x000000",
+        "sunlight": true
+      },
+      {
+        "type": "color",
+        "messageKey": "COLOR_FG",
+        "label": "Digits",
+        "defaultValue": "0xFFFFFF",
+        "sunlight": true
+      },
+      {
+        "type": "text",
+        "defaultValue": "If both colours match, the watch falls back to a legible one. 12 or 24 hour format follows your watch setting."
+      }
+    ]
+  },
+  {
+    "type": "submit",
+    "defaultValue": "Save"
+  }
+]
