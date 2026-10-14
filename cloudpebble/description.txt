@@ -42,6 +42,14 @@ lines, hours above minutes. The edges are smoothed as the numerals are
 turned, so they stay clean at any angle. Should the turned block ever touch
 the edge of the rectangular screen, it is scaled down just enough to fit.
 
+The date is there if you want it: the weekday and the day of the month,
+turned along with the time. The watch looks for the largest free space left
+around the turned digits and puts the date there - side by side, stacked,
+or the two parts apart if that leaves noticeably more room. Should it not
+fit anywhere at full size, it is set a little smaller. The weekday follows
+the language of your watch (English, German, French, Spanish, Italian,
+Portuguese or Dutch), or the one you pick.
+
 Both colours are yours. Pick a background and a colour for the digits; if
 you happen to pick the same one twice, the watch quietly substitutes
 something you can read.
@@ -59,6 +67,9 @@ SETTINGS
 - Tilt - 0 to 90 degrees. 0 keeps the time upright.
 - Worn upside down - turns the time by another 180 degrees. Leave it off if
   your watch already turns the whole display.
+- Show the date - weekday and day, placed wherever the most space is left.
+- Weekday language - the same as the watch, or one of English, German,
+  French, Spanish, Italian, Portuguese and Dutch.
 - Background - the face colour.
 - Digits - the colour of the numerals.
 
@@ -71,6 +82,12 @@ Watchfaces (Minimalist / Modern)
 
 
 RELEASE NOTES
+
+1.1.0
+
+Optional date: weekday and day, turned with the time and placed in the
+largest free space around it. The weekday follows the language of your
+watch, or the one you pick.
 
 1.0.0
 

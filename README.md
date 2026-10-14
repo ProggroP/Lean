@@ -4,7 +4,7 @@
 
 <img src="screenshots/shot_emery_mono.png" alt="shot_emery_mono.png"> <img src="screenshots/shot_emery_amber.png" alt="shot_emery_amber.png"> <img src="screenshots/shot_emery_mint.png" alt="shot_emery_mint.png"> <img src="screenshots/shot_gabbro_mono.png" alt="shot_gabbro_mono.png"> <img src="screenshots/shot_gabbro_teal.png" alt="shot_gabbro_teal.png"> <img src="screenshots/shot_gabbro_orange.png" alt="shot_gabbro_orange.png">
 
-A Pebble watchface (v1.0.0).
+A Pebble watchface (v1.1.0).
 
 Every watch assumes you can turn your arm until the face lies straight in
 front of you. Not everyone can. Lean turns the time instead of your arm:
@@ -15,6 +15,9 @@ at it.
 Worn on the left wrist the time turns clockwise, worn on the right it turns
 counter-clockwise, anything from 0 to 90 degrees. One switch adds another
 180 degrees for wearing the watch the other way round.
+
+An optional date - weekday and day - turns along with the time and goes
+wherever the most space is left around the turned digits.
 
 The time is set in LECO 1976, two lines, hours above minutes, drawn far
 larger than the built-in version allows. There is no animation; the face is
@@ -30,12 +33,27 @@ supersampling) and is blended between digit and background colour, so the
 edges stay smooth at any angle. On the rectangular screen the block is
 scaled down if its turned corners would otherwise touch the edge.
 
+## Where the date goes
+
+The date is drawn upright into a second mask and placed in the reading frame
+of the time, the coordinate system in which the digits stand upright. There
+the screen edge is a tilted rectangle (or a circle) and the time block an
+obstacle. A grid search with a pixel-exact refinement finds the spot with the
+largest distance to both, for three arrangements: side by side, stacked, and
+split (weekday and day placed separately). Splitting only wins if it leaves
+noticeably more room. If nothing fits at 28 pt, the search repeats at 22 pt.
+The result is cached and only recomputed when the angle, the date or the
+settings change.
+
 ## Settings
 
 - Worn on - left wrist (clockwise) or right wrist (counter-clockwise).
 - Tilt - 0 to 90 degrees in steps of 5.
 - Worn upside down - adds 180 degrees. Leave it off if your watch already
   turns the whole display.
+- Show the date - weekday and day, off by default.
+- Weekday language - the watch language, or English, German, French,
+  Spanish, Italian, Portuguese, Dutch.
 - Background - the face colour.
 - Digits - the colour of the numerals.
 
@@ -58,6 +76,12 @@ pebble install --emulator emery
 The repository can also be imported into CloudPebble as is.
 
 ## Release notes
+
+### 1.1.0
+
+Optional date: weekday and day, turned with the time and placed in the
+largest free space around it. The weekday follows the watch language, or the
+one you pick.
 
 ### 1.0.0
 

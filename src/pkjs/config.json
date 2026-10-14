@@ -54,6 +54,38 @@
     "items": [
       {
         "type": "heading",
+        "defaultValue": "Date"
+      },
+      {
+        "type": "toggle",
+        "messageKey": "DATE",
+        "label": "Show the date",
+        "description": "Weekday and day, turned with the time. They go wherever the most space is left - side by side, stacked, or apart if that leaves noticeably more room.",
+        "defaultValue": false
+      },
+      {
+        "type": "select",
+        "messageKey": "LANG",
+        "label": "Weekday language",
+        "defaultValue": "0",
+        "options": [
+          { "label": "Same as the watch", "value": "0" },
+          { "label": "English  ·  MO TU WE", "value": "1" },
+          { "label": "Deutsch  ·  MO DI MI", "value": "2" },
+          { "label": "Français  ·  LU MA ME", "value": "3" },
+          { "label": "Español  ·  LU MA MI", "value": "4" },
+          { "label": "Italiano  ·  LU MA ME", "value": "5" },
+          { "label": "Português  ·  SEG TER QUA", "value": "6" },
+          { "label": "Nederlands  ·  MA DI WO", "value": "7" }
+        ]
+      }
+    ]
+  },
+  {
+    "type": "section",
+    "items": [
+      {
+        "type": "heading",
         "defaultValue": "Colours"
       },
       {

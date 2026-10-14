@@ -14,6 +14,13 @@
 // auf Emery um 45 Grad herum knapp moeglich), wird er beim Drehen ein wenig
 // verkleinert.
 //
+// Das Datum (Wochentag und Tag) dreht mit. Es wird vorab in eine eigene Maske
+// gelesen und im "Leseraum" platziert, also im ungedrehten Koordinatensystem
+// des Zeitblocks. Dort ist der Bildschirmrand ein gekipptes Rechteck bzw. ein
+// Kreis, und gesucht wird die Stelle mit dem groessten Abstand zu Rand und
+// Zeitblock -- nebeneinander, gestapelt oder getrennt, je nachdem, was mehr
+// Luft laesst.
+//
 // Gezeichnet wird nur einmal pro Minute und bei geaenderten Einstellungen.
 //
 // Nur Emery und Gabbro: die 104er-LECO braucht das 512-Byte-Glyph-Limit, und
@@ -23,9 +30,9 @@
 
 // --------------------------------------------------------------- Diagnose
 
-// Nur fuer Store-Screenshots: haelt die Anzeige auf 10:08. pebble
-// emu-set-time greift in dieser Umgebung nicht. Vor dem Release wieder
-// auskommentieren.
+// Nur fuer Store-Screenshots: haelt die Anzeige auf Mittwoch, 14., 10:08.
+// pebble emu-set-time greift in dieser Umgebung nicht. Vor dem Release
+// wieder auskommentieren.
 // #define LEAN_DEMO_TIME
 
 // --------------------------------------------------------------- Farben
@@ -55,6 +62,41 @@
 #define FB_MAX_W    260
 #define FB_MAX_H    260
 
+// --------------------------------------------------------------- Datum
+
+#define DATE_BOX_TOP      -25   // Textrahmen beim ungedrehten Vorzeichnen
+#define DATE_BOX_H         50
+#define DATE_CAPTURE_GAP    6   // Abstand der beiden Teile beim Vorzeichnen
+
+#define DATE_GAP            8   // Mindestabstand zum Zeitblock
+#define DATE_ITEM_GAP       9   // Wochentag und Tag nebeneinander
+#define DATE_LINE_GAP       6   // Wochentag ueber Tag
+// So viel mehr Luft (px) muss eine Trennung bringen, sonst bleibt das Datum
+// zusammen -- getrennt liest es sich schlechter.
+#define DATE_SPLIT_BONUS    6
+// Platzsuche: Rasterweite und Suchradius im Leseraum
+#define DATE_STEP           2
+#define DATE_RANGE        150
+
+// Sprachen der Wochentagskuerzel. LANG_AUTO folgt der Uhr.
+#define LANG_AUTO   0
+#define LANG_COUNT  7
+
+static const char *const LANG_CODES[LANG_COUNT] = {
+  "en", "de", "fr", "es", "it", "pt", "nl",
+};
+
+// Kuerzel ab Sonntag, in Grossbuchstaben wie die Ziffern
+static const char *const WDAY_NAMES[LANG_COUNT][7] = {
+  { "SU",  "MO",  "TU",  "WE",  "TH",  "FR",  "SA"   },   // en
+  { "SO",  "MO",  "DI",  "MI",  "DO",  "FR",  "SA"   },   // de
+  { "DI",  "LU",  "MA",  "ME",  "JE",  "VE",  "SA"   },   // fr
+  { "DO",  "LU",  "MA",  "MI",  "JU",  "VI",  "SA"   },   // es
+  { "DO",  "LU",  "MA",  "ME",  "GI",  "VE",  "SA"   },   // it
+  { "DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SÁB"  },   // pt
+  { "ZO",  "MA",  "DI",  "WO",  "DO",  "VR",  "ZA"   },   // nl
+};
+
 // --------------------------------------------------------------- Einstellungen
 
 #define WRIST_LEFT     0
@@ -68,12 +110,16 @@
 #define PKEY_WRIST      103
 #define PKEY_TILT       104
 #define PKEY_FLIP       105
+#define PKEY_DATE       106
+#define PKEY_LANG       107
 
 static GColor s_color_bg;
 static GColor s_color_fg;
 static int    s_wrist = WRIST_LEFT;
 static int    s_tilt  = TILT_DEFAULT;
 static bool   s_flip  = false;
+static bool   s_date  = false;
+static int    s_lang  = LANG_AUTO;
 
 // --------------------------------------------------------------- Zustand
 
@@ -84,11 +130,67 @@ static int     s_ref_w;      // Breite von "00", fuer eine stabile Skalierung
 
 static char s_hour_text[4] = "";
 static char s_min_text[4]  = "";
+static char s_wday_text[8] = "";
+static char s_mday_text[4] = "";
 
-// Ziffernmaske, 1 Bit je Pixel, Zeilenlaenge = Framebufferbreite
+// Masken, 1 Bit je Pixel, Zeilenlaenge = Framebufferbreite
 static uint8_t s_mask[(FB_MAX_W * FB_MAX_H + 7) / 8];
+static uint8_t s_date_mask[(FB_MAX_W * FB_MAX_H + 7) / 8];
+
+// Umriss der Tinte, Grenzen inklusive. Leer, solange x1 < x0.
+typedef struct {
+  int x0, y0, x1, y1;
+} Ink;
+
+// Rechteck im Leseraum, relativ zur Mitte des Zeitblocks, x1/y1 exklusiv
+typedef struct {
+  int x0, y0, x1, y1;
+} Box;
+
+// Ein Teil des Datums: wo seine Tinte in der Datumsmaske liegt und wohin er
+// im Leseraum kommt
+typedef struct {
+  Ink ink;
+  int x, y;          // Platzierung oben links, relativ zur Mitte des Zeitblocks
+} DateItem;
+
+#define ITEM_WDAY  0
+#define ITEM_MDAY  1
+
+static DateItem s_items[2];
+static bool     s_date_placed = false;
+
+// Datumsschriften: die grosse, und eine kleinere fuer Winkel, bei denen die
+// grosse nirgends Platz findet (etwa 90 Grad auf Emery)
+#define DATE_FONTS  2
+static GFont s_date_fonts[DATE_FONTS];
+
+// Merkt sich, wofuer die Platzierung zuletzt berechnet wurde. Die Suche ist
+// teuer, die Eingaben aendern sich hoechstens einmal am Tag.
+typedef struct {
+  int deg;
+  int32_t k;
+  int obst_w, obst_h;
+  char wday[8];
+  char mday[4];
+} LayoutKey;
+
+static LayoutKey s_layout_key;
+static bool      s_layout_valid = false;
+static int       s_date_font_idx = 0;    // Ergebnis: gewaehlte Datumsschrift
 
 // --------------------------------------------------------------- Zeittext
+
+static int current_lang(void) {
+  if (s_lang > LANG_AUTO && s_lang <= LANG_COUNT) return s_lang - 1;
+  const char *locale = i18n_get_system_locale();
+  if (locale) {
+    for (int i = 0; i < LANG_COUNT; i++) {
+      if (strncmp(locale, LANG_CODES[i], 2) == 0) return i;
+    }
+  }
+  return 0;                                // Englisch
+}
 
 static void update_time_text(void) {
   time_t now = time(NULL);
@@ -97,13 +199,19 @@ static void update_time_text(void) {
   struct tm demo = *t;
   demo.tm_hour = 10;
   demo.tm_min = 8;
+  demo.tm_mday = 14;
+  demo.tm_wday = 3;
   t = &demo;
 #endif
   // Klemmung gegen -Wformat-truncation, die Werte liegen ohnehin im Bereich
   int hour = t->tm_hour % 24;
   int min  = t->tm_min % 60;
+  int mday = t->tm_mday % 32;
+  int wday = t->tm_wday % 7;
   if (hour < 0) hour = 0;
   if (min < 0) min = 0;
+  if (mday < 1) mday = 1;
+  if (wday < 0) wday = 0;
 
   if (!clock_is_24h_style()) {
     hour = hour % 12;
@@ -113,18 +221,12 @@ static void update_time_text(void) {
     snprintf(s_hour_text, sizeof(s_hour_text), "%02d", hour);
   }
   snprintf(s_min_text, sizeof(s_min_text), "%02d", min);
+
+  snprintf(s_wday_text, sizeof(s_wday_text), "%s", WDAY_NAMES[current_lang()][wday]);
+  snprintf(s_mday_text, sizeof(s_mday_text), "%d", mday);
 }
 
-// --------------------------------------------------------------- Drehung
-
-// Drehwinkel in Grad, im Uhrzeigersinn positiv. Am linken Handgelenk liegt
-// die Uhr beim Hinsehen gegen den Uhrzeigersinn verdreht, die Zeit muss also
-// im Uhrzeigersinn gegensteuern -- rechts genau umgekehrt.
-static int rotation_deg(void) {
-  int deg = (s_wrist == WRIST_LEFT) ? s_tilt : -s_tilt;
-  if (s_flip) deg += 180;
-  return ((deg % 360) + 360) % 360;
-}
+// --------------------------------------------------------------- Rechenhilfen
 
 static uint32_t isqrt(uint32_t n) {
   uint32_t root = 0;
@@ -140,6 +242,21 @@ static uint32_t isqrt(uint32_t n) {
     bit >>= 2;
   }
   return root;
+}
+
+static inline int imin(int a, int b) { return a < b ? a : b; }
+static inline int imax(int a, int b) { return a > b ? a : b; }
+static inline int iabs(int a) { return a < 0 ? -a : a; }
+
+// --------------------------------------------------------------- Drehung
+
+// Drehwinkel in Grad, im Uhrzeigersinn positiv. Am linken Handgelenk liegt
+// die Uhr beim Hinsehen gegen den Uhrzeigersinn verdreht, die Zeit muss also
+// im Uhrzeigersinn gegensteuern -- rechts genau umgekehrt.
+static int rotation_deg(void) {
+  int deg = (s_wrist == WRIST_LEFT) ? s_tilt : -s_tilt;
+  if (s_flip) deg += 180;
+  return ((deg % 360) + 360) % 360;
 }
 
 // Skalierung (16.16, hoechstens 1.0), mit der ein w x h grosser Block um den
@@ -176,71 +293,245 @@ static uint8_t blend(uint8_t fg, uint8_t bg, int cov) {
   return out;
 }
 
-static inline int mask_get(int x, int y, int w, int h) {
+static inline int bit_get(const uint8_t *mask, int x, int y, int w, int h) {
   if ((unsigned)x >= (unsigned)w || (unsigned)y >= (unsigned)h) return 0;
   int i = y * w + x;
-  return (s_mask[i >> 3] >> (i & 7)) & 1;
+  return (mask[i >> 3] >> (i & 7)) & 1;
 }
 
-// Liest alle Ziffernpixel in die Maske, loescht sie im Framebuffer und
-// schreibt sie gedreht zurueck.
-static void rotate_digits(GContext *ctx) {
-  GBitmap *fb = graphics_capture_frame_buffer(ctx);
-  if (!fb) return;
-
+// Liest alle Nicht-Hintergrund-Pixel in die Maske und loescht sie im
+// Framebuffer. Links und rechts von split_x wird der Umriss getrennt
+// vermessen; mit split_x = 0 landet alles rechts.
+static void capture_ink(GBitmap *fb, uint8_t *mask, uint8_t bg, int split_x,
+                        Ink *left, Ink *right) {
   GRect fb_bounds = gbitmap_get_bounds(fb);
   int w = fb_bounds.size.w;
   int h = fb_bounds.size.h;
-  if (w > FB_MAX_W || h > FB_MAX_H) {
-    graphics_release_frame_buffer(ctx, fb);
-    return;
-  }
-  uint8_t bg = s_color_bg.argb;
+  *left  = (Ink){ w, h, -1, -1 };
+  *right = (Ink){ w, h, -1, -1 };
 
-  // 1. Maske fuellen, Ziffern loeschen, Ausdehnung merken
-  memset(s_mask, 0, (w * h + 7) / 8);
-  int min_x = w, max_x = -1, min_y = h, max_y = -1;
+  memset(mask, 0, (w * h + 7) / 8);
   for (int y = 0; y < h; y++) {
     GBitmapDataRowInfo row = gbitmap_get_data_row_info(fb, y);
     for (int x = row.min_x; x <= row.max_x; x++) {
       if (row.data[x] == bg) continue;
       int i = y * w + x;
-      s_mask[i >> 3] |= (uint8_t)(1 << (i & 7));
+      mask[i >> 3] |= (uint8_t)(1 << (i & 7));
       row.data[x] = bg;
-      if (x < min_x) min_x = x;
-      if (x > max_x) max_x = x;
-      if (y < min_y) min_y = y;
-      if (y > max_y) max_y = y;
+      Ink *ink = (x < split_x) ? left : right;
+      if (x < ink->x0) ink->x0 = x;
+      if (x > ink->x1) ink->x1 = x;
+      if (y < ink->y0) ink->y0 = y;
+      if (y > ink->y1) ink->y1 = y;
     }
   }
-  if (max_x < 0) {
-    graphics_release_frame_buffer(ctx, fb);
-    return;
+}
+
+static inline bool ink_empty(const Ink *ink) { return ink->x1 < ink->x0; }
+static inline int  ink_w(const Ink *ink) { return ink->x1 - ink->x0 + 1; }
+static inline int  ink_h(const Ink *ink) { return ink->y1 - ink->y0 + 1; }
+
+// --------------------------------------------------------------- Platzsuche
+
+// Alles, was die Platzsuche ueber Display und Zeitblock wissen muss
+typedef struct {
+  int32_t cs, sn;    // Drehung, 16.16
+  int32_t k;         // Skalierung, 16.16
+  int half_w, half_h;  // Display ohne Rand, halbe Masse (eckig)
+  int radius;          // Display ohne Rand (rund)
+  Box obstacles[2];
+  int n_obstacles;
+} Geo;
+
+// Abstand eines Rechtecks im Leseraum zum Displayrand und zu allen
+// Hindernissen, jeweils abzueglich des geforderten Mindestabstands.
+// Negativ heisst: passt nicht.
+static int clearance(const Geo *g, const Box *b) {
+  int best = 0x7FFF;
+
+  for (int i = 0; i < g->n_obstacles; i++) {
+    const Box *o = &g->obstacles[i];
+    int gx = imax(o->x0 - b->x1, b->x0 - o->x1);
+    int gy = imax(o->y0 - b->y1, b->y0 - o->y1);
+    if (gx < 0 && gy < 0) return -1;      // ueberlappt
+    int dist = (gx > 0 && gy > 0) ? (int)isqrt((uint32_t)(gx * gx + gy * gy))
+                                  : imax(gx, gy);
+    best = imin(best, dist - DATE_GAP);
+    if (best < 0) return -1;
   }
 
-  int ink_w = max_x - min_x + 1;
-  int ink_h = max_y - min_y + 1;
+  // Die Ecken genuegen: Display und Rechteck sind beide konvex
+  for (int i = 0; i < 4; i++) {
+    int tx = (i & 1) ? b->x1 : b->x0;
+    int ty = (i & 2) ? b->y1 : b->y0;
+    int64_t rx = (int64_t)g->cs * tx - (int64_t)g->sn * ty;
+    int64_t ry = (int64_t)g->sn * tx + (int64_t)g->cs * ty;
+    int dx = (int)((rx * g->k) >> 32);
+    int dy = (int)((ry * g->k) >> 32);
+#if defined(PBL_ROUND)
+    int c = g->radius - (int)isqrt((uint32_t)(dx * dx + dy * dy));
+#else
+    int c = imin(g->half_w - iabs(dx), g->half_h - iabs(dy));
+#endif
+    best = imin(best, c);
+    if (best < 0) return -1;
+  }
+  return best;
+}
 
+// Sucht fuer ein w x h grosses Rechteck die Stelle mit dem meisten Platz.
+// Bei Gleichstand gewinnt die Stelle naeher an der Mittelachse, dann die
+// weiter unten. Liefert den Abstand oder -1, wenn es nirgends passt.
+typedef struct {
+  int c, ax, cx, cy;
+  Box box;
+} Candidate;
+
+// Bei gleichem Platz: naeher an der Mittelachse, dann rechts der Zeit, dann
+// darunter -- so steht das Datum, wo man es von Papier und Uhr gewohnt ist.
+static void try_candidate(const Geo *g, int cx, int cy, int w, int h, Candidate *best) {
+  Box b = { cx - w / 2, cy - h / 2, cx - w / 2 + w, cy - h / 2 + h };
+  int c = clearance(g, &b);
+  if (c < 0) return;
+  int ax = iabs(cx);
+  bool better = c > best->c ||
+      (c == best->c && (ax < best->ax ||
+      (ax == best->ax && (cx > best->cx ||
+      (cx == best->cx && cy > best->cy)))));
+  if (better) *best = (Candidate){ c, ax, cx, cy, b };
+}
+
+// Erst grob im Raster, dann pixelgenau um den besten Treffer herum. Das
+// Raster darf nicht groeber sein als der knappste Spielraum, den man noch
+// finden will: bei 90 Grad auf Emery passt der Wochentag mit nur 2 px Luft
+// neben die Zeit.
+static int place_box(const Geo *g, int w, int h, Box *out) {
+  Candidate best = { -1, 0, 0, 0, { 0, 0, 0, 0 } };
+  for (int cy = -DATE_RANGE; cy <= DATE_RANGE; cy += DATE_STEP) {
+    for (int cx = -DATE_RANGE; cx <= DATE_RANGE; cx += DATE_STEP) {
+      try_candidate(g, cx, cy, w, h, &best);
+    }
+  }
+  if (best.c < 0) return -1;
+
+  int bx = best.cx;
+  int by = best.cy;
+  for (int cy = by - DATE_STEP; cy <= by + DATE_STEP; cy++) {
+    for (int cx = bx - DATE_STEP; cx <= bx + DATE_STEP; cx++) {
+      try_candidate(g, cx, cy, w, h, &best);
+    }
+  }
+  *out = best.box;
+  return best.c;
+}
+
+// Ordnet Wochentag und Tag an: nebeneinander, uebereinander oder getrennt,
+// je nachdem, was den meisten Abstand zu Rand und Zeitblock laesst.
+static void layout_date(Geo *g) {
+  int ww = ink_w(&s_items[ITEM_WDAY].ink), hw = ink_h(&s_items[ITEM_WDAY].ink);
+  int wd = ink_w(&s_items[ITEM_MDAY].ink), hd = ink_h(&s_items[ITEM_MDAY].ink);
+  int best = -1;
+  Box b;
+
+  // Nebeneinander, unten buendig
+  int row_h = imax(hw, hd);
+  if ((best = place_box(g, ww + DATE_ITEM_GAP + wd, row_h, &b)) >= 0) {
+    s_items[ITEM_WDAY].x = b.x0;
+    s_items[ITEM_WDAY].y = b.y1 - hw;
+    s_items[ITEM_MDAY].x = b.x0 + ww + DATE_ITEM_GAP;
+    s_items[ITEM_MDAY].y = b.y1 - hd;
+  }
+
+  // Uebereinander, mittig
+  int col_w = imax(ww, wd);
+  int stacked = place_box(g, col_w, hw + DATE_LINE_GAP + hd, &b);
+  if (stacked > best) {
+    best = stacked;
+    s_items[ITEM_WDAY].x = (b.x0 + b.x1 - ww) / 2;
+    s_items[ITEM_WDAY].y = b.y0;
+    s_items[ITEM_MDAY].x = (b.x0 + b.x1 - wd) / 2;
+    s_items[ITEM_MDAY].y = b.y1 - hd;
+  }
+
+  // Getrennt: erst der Wochentag an die beste Stelle, dann der Tag an die
+  // beste verbleibende
+  Box bw, bd;
+  int split = place_box(g, ww, hw, &bw);
+  if (split >= 0) {
+    g->obstacles[g->n_obstacles++] = bw;
+    int second = place_box(g, wd, hd, &bd);
+    g->n_obstacles--;
+    split = (second < 0) ? -1 : imin(split, second);
+  }
+  if (split >= 0 && (best < 0 || split > best + DATE_SPLIT_BONUS)) {
+    best = split;
+    s_items[ITEM_WDAY].x = bw.x0;
+    s_items[ITEM_WDAY].y = bw.y0;
+    s_items[ITEM_MDAY].x = bd.x0;
+    s_items[ITEM_MDAY].y = bd.y0;
+  }
+
+  s_date_placed = best >= 0;
+}
+
+// --------------------------------------------------------------- Rendern
+
+// Lage und Drehung des Zeitblocks fuer das aktuelle Bild
+typedef struct {
+  int w, h;              // Framebuffer
+  int src_cx, src_cy;    // Mitte des Zeitblocks in der Maske
+  int tw, th;            // Tintenumriss des Zeitblocks
+  int deg;
+  int32_t cs, sn;        // Drehung, 16.16
+  int32_t k;             // Skalierung, 16.16
+} Frame;
+
+static void frame_setup(Frame *f, int w, int h, const Ink *time_ink) {
+  f->w = w;
+  f->h = h;
+  f->tw = ink_w(time_ink);
+  f->th = ink_h(time_ink);
   // Ganzzahlige Mittelpunkte: bei 0, 90 und 180 Grad treffen die Abtastpunkte
   // dann genau die Quellpixel, und die Kanten bleiben scharf.
-  int src_cx = (min_x + max_x + 1) / 2;
-  int src_cy = (min_y + max_y + 1) / 2;
+  f->src_cx = (time_ink->x0 + time_ink->x1 + 1) / 2;
+  f->src_cy = (time_ink->y0 + time_ink->y1 + 1) / 2;
+  f->deg = rotation_deg();
+  int32_t angle = DEG_TO_TRIGANGLE(f->deg);
+  f->cs = cos_lookup(angle);
+  f->sn = sin_lookup(angle);
+  // Fuer die Skalierung die Breite von "00": sonst wuerde der Block je nach
+  // Ziffern minimal pumpen.
+  f->k = fit_scale(imax(f->tw, s_ref_w), f->th, iabs(f->cs), iabs(f->sn), w, h);
+}
+
+// Datumsbit an einer Stelle des Leseraums (relativ zur Mitte des Zeitblocks)
+static inline int date_get(int rx, int ry, int w, int h) {
+  for (int i = 0; i < 2; i++) {
+    const DateItem *it = &s_items[i];
+    int ix = rx - it->x;
+    int iy = ry - it->y;
+    if ((unsigned)ix < (unsigned)ink_w(&it->ink) &&
+        (unsigned)iy < (unsigned)ink_h(&it->ink)) {
+      return bit_get(s_date_mask, it->ink.x0 + ix, it->ink.y0 + iy, w, h);
+    }
+  }
+  return 0;
+}
+
+// Zeichnet Zeit- und Datumsmaske gedreht in den Framebuffer
+static void render_rotated(GBitmap *fb, const Frame *f, bool with_date) {
+  int w = f->w;
+  int h = f->h;
+  uint8_t bg = s_color_bg.argb;
   int dst_cx = w / 2;
   int dst_cy = h / 2;
-
-  int32_t angle = DEG_TO_TRIGANGLE(rotation_deg());
-  int32_t cs = cos_lookup(angle);
-  int32_t sn = sin_lookup(angle);
-
-  int block_w = (ink_w > s_ref_w) ? ink_w : s_ref_w;
-  int32_t k = fit_scale(block_w, ink_h, cs < 0 ? -cs : cs, sn < 0 ? -sn : sn, w, h);
-  int64_t inv_k = ((int64_t)1 << 32) / k;
+  int64_t inv_k = ((int64_t)1 << 32) / f->k;
 
   // Rueckwaertsabbildung Ziel -> Quelle: Schritt je Zielpixel in x (u) und y (v)
-  int32_t ux = (int32_t)(( (int64_t)cs * inv_k) >> 16);
-  int32_t uy = (int32_t)((-(int64_t)sn * inv_k) >> 16);
-  int32_t vx = (int32_t)(( (int64_t)sn * inv_k) >> 16);
-  int32_t vy = (int32_t)(( (int64_t)cs * inv_k) >> 16);
+  int32_t ux = (int32_t)(( (int64_t)f->cs * inv_k) >> 16);
+  int32_t uy = (int32_t)((-(int64_t)f->sn * inv_k) >> 16);
+  int32_t vx = (int32_t)(( (int64_t)f->sn * inv_k) >> 16);
+  int32_t vy = (int32_t)(( (int64_t)f->cs * inv_k) >> 16);
 
   // Vier Abtastpunkte je Zielpixel, um +-1/4 Pixel gegen die Pixelmitte versetzt
   int32_t off_x[4], off_y[4];
@@ -254,38 +545,38 @@ static void rotate_digits(GContext *ctx) {
   uint8_t lut[5];
   for (int cov = 0; cov <= 4; cov++) lut[cov] = blend(s_color_fg.argb, bg, cov);
 
-  // Nur den Kreis abfahren, den der gedrehte Block ueberstreichen kann
-  int radius = (int)(((int64_t)(isqrt((uint32_t)(ink_w * ink_w + ink_h * ink_h)) / 2 + 2) * k) >> 16) + 2;
-  int y0 = dst_cy - radius;
-  int y1 = dst_cy + radius;
-  if (y0 < 0) y0 = 0;
-  if (y1 > h - 1) y1 = h - 1;
+  // Ohne Datum genuegt der Kreis, den der gedrehte Zeitblock ueberstreichen
+  // kann; mit Datum wird das ganze Display abgefahren.
+  int radius = (int)(((int64_t)(isqrt((uint32_t)(f->tw * f->tw + f->th * f->th)) / 2 + 2) * f->k) >> 16) + 2;
+  if (with_date) radius = imax(w, h);
+  int y0 = imax(dst_cy - radius, 0);
+  int y1 = imin(dst_cy + radius, h - 1);
 
   for (int y = y0; y <= y1; y++) {
     GBitmapDataRowInfo row = gbitmap_get_data_row_info(fb, y);
-    int x0 = dst_cx - radius;
-    int x1 = dst_cx + radius;
-    if (x0 < row.min_x) x0 = row.min_x;
-    if (x1 > row.max_x) x1 = row.max_x;
+    int x0 = imax(dst_cx - radius, row.min_x);
+    int x1 = imin(dst_cx + radius, row.max_x);
     if (x0 > x1) continue;
 
     int64_t dx = ((int64_t)(x0 - dst_cx) << 16) + (1 << 15);
     int64_t dy = ((int64_t)(y - dst_cy) << 16) + (1 << 15);
-    int32_t sx = (src_cx << 16) + (int32_t)((dx * ux + dy * vx) >> 16);
-    int32_t sy = (src_cy << 16) + (int32_t)((dx * uy + dy * vy) >> 16);
+    int32_t sx = (f->src_cx << 16) + (int32_t)((dx * ux + dy * vx) >> 16);
+    int32_t sy = (f->src_cy << 16) + (int32_t)((dx * uy + dy * vy) >> 16);
 
     for (int x = x0; x <= x1; x++) {
       int cov = 0;
       for (int i = 0; i < 4; i++) {
-        cov += mask_get((sx + off_x[i]) >> 16, (sy + off_y[i]) >> 16, w, h);
+        int px = (sx + off_x[i]) >> 16;
+        int py = (sy + off_y[i]) >> 16;
+        int hit = bit_get(s_mask, px, py, w, h);
+        if (!hit && with_date) hit = date_get(px - f->src_cx, py - f->src_cy, w, h);
+        cov += hit;
       }
       if (cov) row.data[x] = lut[cov];
       sx += ux;
       sy += uy;
     }
   }
-
-  graphics_release_frame_buffer(ctx, fb);
 }
 
 // --------------------------------------------------------------- Zeichnen
@@ -298,19 +589,103 @@ static void draw_row(GContext *ctx, GRect bounds, int y, const char *text) {
                      NULL);
 }
 
+// Zeichnet das Datum ungedreht, liest es in die Datumsmaske und loescht es
+// wieder. Wochentag links, Tag rechts der Mitte -- so lassen sich beide beim
+// Einlesen an der Mitte auseinanderhalten.
+static bool capture_date(GContext *ctx, GRect bounds, GFont font) {
+  int cx = bounds.size.w / 2;
+  int top = bounds.size.h / 2 + DATE_BOX_TOP;
+  graphics_draw_text(ctx, s_wday_text, font,
+                     GRect(0, top, cx - DATE_CAPTURE_GAP, DATE_BOX_H),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentRight, NULL);
+  graphics_draw_text(ctx, s_mday_text, font,
+                     GRect(cx + DATE_CAPTURE_GAP, top, bounds.size.w - cx - DATE_CAPTURE_GAP, DATE_BOX_H),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+
+  GBitmap *fb = graphics_capture_frame_buffer(ctx);
+  if (!fb) return false;
+  capture_ink(fb, s_date_mask, s_color_bg.argb, gbitmap_get_bounds(fb).size.w / 2,
+              &s_items[ITEM_WDAY].ink, &s_items[ITEM_MDAY].ink);
+  graphics_release_frame_buffer(ctx, fb);
+  return !ink_empty(&s_items[ITEM_WDAY].ink) && !ink_empty(&s_items[ITEM_MDAY].ink);
+}
+
+// Liest das Datum ein und sorgt fuer eine Platzierung. Die Suche laeuft nur,
+// wenn sich Winkel, Zeitblock oder Datumstext geaendert haben; dann zuerst
+// mit der grossen Schrift, und erst wenn die nirgends passt, mit der kleinen.
+// Liefert false, wenn das Datum nirgends Platz hat.
+static bool prepare_date(GContext *ctx, GRect bounds, const Frame *f) {
+  LayoutKey key;
+  memset(&key, 0, sizeof(key));
+  key.deg = f->deg;
+  key.k = f->k;
+  key.obst_w = f->tw;
+  key.obst_h = f->th;
+  strncpy(key.wday, s_wday_text, sizeof(key.wday) - 1);
+  strncpy(key.mday, s_mday_text, sizeof(key.mday) - 1);
+
+  if (s_layout_valid && memcmp(&key, &s_layout_key, sizeof(key)) == 0) {
+    if (!s_date_placed) return false;
+    // Positionen stehen schon, nur die Maske muss neu gefuellt werden
+    return capture_date(ctx, bounds, s_date_fonts[s_date_font_idx]);
+  }
+
+  s_date_placed = false;
+  for (int i = 0; i < DATE_FONTS && !s_date_placed; i++) {
+    if (!capture_date(ctx, bounds, s_date_fonts[i])) continue;
+    Geo g = {
+      .cs = f->cs, .sn = f->sn, .k = f->k,
+      .half_w = f->w / 2 - FIT_MARGIN, .half_h = f->h / 2 - FIT_MARGIN,
+      .radius = f->w / 2 - FIT_MARGIN,
+      .n_obstacles = 1,
+    };
+    // Der echte Tintenumriss, nicht die Breite von "00": neben der Zeit ist
+    // jeder Pixel wertvoll
+    g.obstacles[0] = (Box){ -f->tw / 2, -f->th / 2, f->tw - f->tw / 2, f->th - f->th / 2 };
+    layout_date(&g);
+    s_date_font_idx = i;
+  }
+  s_layout_key = key;
+  s_layout_valid = true;
+  return s_date_placed;
+}
+
 static void canvas_update(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
   int cy = bounds.size.h / 2;
 
   graphics_context_set_fill_color(ctx, s_color_bg);
   graphics_fill_rect(ctx, bounds, 0, GCornerNone);
-
   graphics_context_set_text_color(ctx, s_color_fg);
+
+  // 1. Zeit zeichnen und in die Maske lesen
   draw_row(ctx, bounds, cy + HOUR_TOP, s_hour_text);
   draw_row(ctx, bounds, cy + MIN_TOP, s_min_text);
 
-  // Auch bei 0 Grad: der Block landet dann exakt mittig
-  rotate_digits(ctx);
+  GBitmap *fb = graphics_capture_frame_buffer(ctx);
+  if (!fb) return;
+  GRect fb_bounds = gbitmap_get_bounds(fb);
+  Ink unused, time_ink;
+  bool ok = fb_bounds.size.w <= FB_MAX_W && fb_bounds.size.h <= FB_MAX_H;
+  if (ok) {
+    capture_ink(fb, s_mask, s_color_bg.argb, 0, &unused, &time_ink);
+    ok = !ink_empty(&time_ink);
+  }
+  graphics_release_frame_buffer(ctx, fb);
+  if (!ok) return;
+
+  Frame f;
+  frame_setup(&f, fb_bounds.size.w, fb_bounds.size.h, &time_ink);
+
+  // 2. Datum einlesen und platzieren
+  bool with_date = s_date && prepare_date(ctx, bounds, &f);
+
+  // 3. Alles gedreht zurueckschreiben. Auch bei 0 Grad: der Block landet
+  // dann exakt mittig.
+  fb = graphics_capture_frame_buffer(ctx);
+  if (!fb) return;
+  render_rotated(fb, &f, with_date);
+  graphics_release_frame_buffer(ctx, fb);
 }
 
 // --------------------------------------------------------------- Zeit
@@ -345,6 +720,7 @@ static int tuple_int(Tuple *t) {
 
 static bool valid_wrist(int v) { return v == WRIST_LEFT || v == WRIST_RIGHT; }
 static bool valid_tilt(int v)  { return v >= 0 && v <= TILT_MAX; }
+static bool valid_lang(int v)  { return v >= LANG_AUTO && v <= LANG_COUNT; }
 
 static void load_settings(void) {
   s_color_bg = COLOR_BG_DEFAULT;
@@ -366,6 +742,13 @@ static void load_settings(void) {
   }
   if (persist_exists(PKEY_FLIP)) {
     s_flip = persist_read_bool(PKEY_FLIP);
+  }
+  if (persist_exists(PKEY_DATE)) {
+    s_date = persist_read_bool(PKEY_DATE);
+  }
+  if (persist_exists(PKEY_LANG)) {
+    int v = persist_read_int(PKEY_LANG);
+    if (valid_lang(v)) s_lang = v;
   }
   enforce_contrast();
 }
@@ -401,8 +784,20 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
     s_flip = tuple_int(t) != 0;
     persist_write_bool(PKEY_FLIP, s_flip);
   }
+  if ((t = dict_find(iter, MESSAGE_KEY_DATE)) != NULL) {
+    s_date = tuple_int(t) != 0;
+    persist_write_bool(PKEY_DATE, s_date);
+  }
+  if ((t = dict_find(iter, MESSAGE_KEY_LANG)) != NULL) {
+    int v = tuple_int(t);
+    if (valid_lang(v)) {
+      s_lang = v;
+      persist_write_int(PKEY_LANG, v);
+    }
+  }
 
   enforce_contrast();
+  update_time_text();
   window_set_background_color(s_window, s_color_bg);
   layer_mark_dirty(s_canvas);
 }
@@ -425,6 +820,8 @@ static void window_unload(Window *window) {
 static void init(void) {
   load_settings();
   s_digit_font = fonts_load_custom_font(resource_get_handle(RESOURCE_ID_FONT_LECO_104));
+  s_date_fonts[0] = fonts_load_custom_font(resource_get_handle(RESOURCE_ID_FONT_LECO_28));
+  s_date_fonts[1] = fonts_load_custom_font(resource_get_handle(RESOURCE_ID_FONT_LECO_22));
   s_ref_w = graphics_text_layout_get_content_size(
       "00", s_digit_font, GRect(0, 0, FB_MAX_W, FB_MAX_H),
       GTextOverflowModeWordWrap, GTextAlignmentLeft).w;
@@ -449,6 +846,7 @@ static void deinit(void) {
   tick_timer_service_unsubscribe();
   window_destroy(s_window);
   fonts_unload_custom_font(s_digit_font);
+  for (int i = 0; i < DATE_FONTS; i++) fonts_unload_custom_font(s_date_fonts[i]);
 }
 
 int main(void) {

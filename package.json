@@ -21,7 +21,9 @@
             "COLOR_FG",
             "WRIST",
             "TILT",
-            "FLIP"
+            "FLIP",
+            "DATE",
+            "LANG"
         ],
         "projectType": "native",
         "resources": {
@@ -30,6 +32,18 @@
                     "characterRegex": "[0-9]",
                     "file": "fonts/leco1976-pebble.otf",
                     "name": "FONT_LECO_104",
+                    "type": "font"
+                },
+                {
+                    "characterRegex": "[0-9A-ZÁ]",
+                    "file": "fonts/leco1976-pebble.otf",
+                    "name": "FONT_LECO_28",
+                    "type": "font"
+                },
+                {
+                    "characterRegex": "[0-9A-ZÁ]",
+                    "file": "fonts/leco1976-pebble.otf",
+                    "name": "FONT_LECO_22",
                     "type": "font"
                 }
             ]
@@ -44,5 +58,5 @@
             "watchface": true
         }
     },
-    "version": "1.0.0"
+    "version": "1.1.0"
 }
